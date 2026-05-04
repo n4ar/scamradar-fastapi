@@ -1,21 +1,18 @@
 import pytest
-from ml.classifier import load_vocab, load_model, load_config, predict
+import numpy as np
+from ml.classifier import load_vocab, load_interpreter, predict
 
-VOCAB_PATH = "ml/vocab.json"
-MODEL_PATH = "ml/model.keras"
-CONFIG_PATH = "ml/config.json"
-
+VOCAB_PATH = "ml/vocab.txt"
+MODEL_PATH = "ml/model.tflite"
 
 @pytest.fixture(scope="module")
 def classifier():
     vocab = load_vocab(VOCAB_PATH)
-    model = load_model(MODEL_PATH)
-    config = load_config(CONFIG_PATH)
-    return vocab, model, config
-
+    interpreter = load_interpreter(MODEL_PATH)
+    return vocab, interpreter
 
 def test_vocab_loads(classifier):
-    vocab, _, _ = classifier
+    vocab, _ = classifier
     assert "<PAD>" in vocab
     assert vocab["<PAD>"] == 0
     assert "<START>" in vocab
@@ -24,18 +21,9 @@ def test_vocab_loads(classifier):
     assert vocab["<UNKNOWN>"] == 2
     assert len(vocab) > 100
 
-
-def test_config_loads(classifier):
-    _, _, config = classifier
-    assert "max_len" in config
-    assert "threshold" in config
-    assert config["max_len"] > 0
-    assert 0 < config["threshold"] < 1
-
-
 def test_predict_returns_expected_keys(classifier):
-    vocab, model, config = classifier
-    result = predict("ทดสอบ", model, vocab, config)
+    vocab, interpreter = classifier
+    result = predict("ทดสอบ", interpreter, vocab)
     assert "scam_prob" in result
     assert "label" in result
     assert "confidence" in result
@@ -43,24 +31,21 @@ def test_predict_returns_expected_keys(classifier):
     assert result["label"] in ("fraud", "ham")
     assert result["confidence"] in ("high", "medium", "low")
 
-
 def test_predict_scam_text(classifier):
-    vocab, model, config = classifier
+    vocab, interpreter = classifier
     text = "ยินดีด้วย บัญชีกสิกรของคุณได้รับโบนัส กดรับที่ลิงก์"
-    result = predict(text, model, vocab, config)
+    result = predict(text, interpreter, vocab)
     assert result["scam_prob"] > 0.5
     assert result["label"] == "fraud"
 
-
 def test_predict_ham_text(classifier):
-    vocab, model, config = classifier
-    text = "สวัสดีครับ ขอนัดหมายวันพรุ่งนี้เวลาสิบโมง"
-    result = predict(text, model, vocab, config)
+    vocab, interpreter = classifier
+    text = "สินค้าของคุณจัดส่งแล้ว ติดตามพัสดุได้ที่ไปรษณีย์ไทย"
+    result = predict(text, interpreter, vocab)
     assert result["scam_prob"] < 0.5
     assert result["label"] == "ham"
 
-
 def test_predict_empty_text(classifier):
-    vocab, model, config = classifier
-    result = predict("", model, vocab, config)
-    assert "scam_prob" in result
+    vocab, interpreter = classifier
+    result = predict("", interpreter, vocab)
+    assert "scam_prob" in result  # should not crash
