@@ -15,7 +15,9 @@ def build_vote_flex(msg_hash: str):
                 "contents": [
                     {"type": "text", "text": "ช่วยปกป้องชุมชนด้วย 🙏", "weight": "bold", "size": "sm"},
                     {"type": "text", "text": "ข้อความนี้เป็น scam จริงไหม?", 
-                     "size": "xs", "color": "#888888", "wrap": True}
+                     "size": "xs", "color": "#888888", "wrap": True},
+                    {"type": "text", "text": "*ข้อมูลจะถูกจัดเก็บแบบไม่ระบุตัวตนและปกปิดข้อมูลส่วนบุคคล เพื่อนำไปพัฒนา AI ให้เก่งขึ้น",
+                     "size": "xxs", "color": "#B0B0B0", "wrap": True, "margin": "sm"}
                 ]
             },
             "footer": {

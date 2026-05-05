@@ -13,7 +13,7 @@ from app.pipelines import nlp as nlp_pipeline
 from app.scorer import compute_risk_score
 from app.formatter import format_response
 from app.vote_flex import build_vote_flex
-from app.vote_db import save_vote
+from app.vote_db import save_vote, log_analysis
 import hashlib
 
 _token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
@@ -59,15 +59,18 @@ def _push(user_id: str, text: str, msg_hash: str = None):
 def handle_postback(event: PostbackEvent):
     data = dict(p.split('=') for p in event.postback.data.split('&'))
     if data.get('action') == 'vote':
-        asyncio.create_task(
-            save_vote(
+        async def _process_vote():
+            success = await save_vote(
                 msg_hash=data['msg_id'],
                 vote=data['result'],
                 user_id=event.source.user_id,
-                bigru_score=None # In a real scenario we might want to pass this through or re-compute, keeping None for now
+                bigru_score=None
             )
-        )
-        # ไม่ reply — ไม่รก chat
+            # Reply only if it's the first time voting (success == True)
+            if success:
+                _reply(event.reply_token, "ขอบคุณที่ช่วยรายงาน! ข้อมูลของคุณจะช่วยปกป้องคนอื่นๆ ครับ 🛡️")
+        
+        asyncio.create_task(_process_vote())
 
 async def _build_response_async(score_result: dict, original_text: str = "") -> str:
     from app.explainer import explain
@@ -124,8 +127,13 @@ def on_text(event: MessageEvent):
     async def _run():
         if msg_type == "text":
             result_text, msg_hash = await _process_text(event.message.text, state)
+            # Log for training
+            nlp_res = nlp_pipeline.run(event.message.text, state.interpreter, state.vocab)
+            await log_analysis(msg_hash, event.message.text, nlp_res["scam_prob"])
         elif msg_type in ("url", "text_with_url"):
             result_text, msg_hash = await _process_text_with_url(event.message.text, state)
+            nlp_res = nlp_pipeline.run(event.message.text, state.interpreter, state.vocab)
+            await log_analysis(msg_hash, event.message.text, nlp_res["scam_prob"])
         else:
             result_text, msg_hash = "ไม่รองรับรูปแบบนี้", None
         
@@ -172,10 +180,13 @@ def on_image(event: MessageEvent):
             return
 
         msg_hash = make_msg_hash(extracted_text)
-        nlp_result = nlp_pipeline.run(extracted_text, state.interpreter, state.vocab)
+        # Log for training
+        nlp_res = nlp_pipeline.run(extracted_text, state.interpreter, state.vocab)
+        await log_analysis(msg_hash, extracted_text, nlp_res["scam_prob"])
+        
         urls = extract_urls(extracted_text)
         url_result = await check_url(urls[0]) if urls else None
-        score_result = compute_risk_score(nlp_result=nlp_result, url_result=url_result, original_text=extracted_text)
+        score_result = compute_risk_score(nlp_result=nlp_res, url_result=url_result, original_text=extracted_text)
         result_text = await _build_response_async(score_result, extracted_text)
         _push(user_id, result_text, msg_hash)
 
