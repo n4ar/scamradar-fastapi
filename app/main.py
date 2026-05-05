@@ -9,6 +9,8 @@ from app.line_handler import handle_webhook
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.vote_db import init_db
+    await init_db()
     app.state.vocab = load_vocab("ml/vocab.txt")
     app.state.interpreter = load_interpreter("ml/model.tflite")
     yield

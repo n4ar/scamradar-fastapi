@@ -46,6 +46,19 @@ async def _call_typhoon_ocr(image_bytes: bytes) -> str:
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(_TYPHOON_BASE, json=payload, headers=headers)
             r.raise_for_status()
-            return r.json()["choices"][0]["message"]["content"].strip()
-    except Exception:
+            content = r.json()["choices"][0]["message"]["content"].strip()
+            
+            # Typhoon OCR sometimes returns JSON string instead of raw text
+            import json
+            if content.startswith("{") and content.endswith("}"):
+                try:
+                    parsed = json.loads(content)
+                    if "natural_text" in parsed:
+                        return parsed["natural_text"]
+                except json.JSONDecodeError:
+                    pass
+                    
+            return content
+    except Exception as e:
+        print(f"OCR Error: {e}")
         return ""

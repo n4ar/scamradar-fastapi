@@ -17,9 +17,8 @@ def test_url_and_text():
         nlp_result={"scam_prob": 0.8, "confidence": "high"},
         url_result={"malicious": 10, "total_engines": 90, "domain_age_days": 5, "impersonation": None},
     )
-    # score = 0.8*0.5 + (10/90)*0.5 + 0.1 (age<30) = 0.4 + 0.056 + 0.1 = 0.556
-    assert result["score"] > 0.5
-    assert result["risk_level"] == "ปานกลาง"
+    assert result["score"] >= 0.8
+    assert result["risk_level"] == "สูง"
 
 def test_domain_impersonation_bonus():
     result = compute_risk_score(

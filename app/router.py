@@ -1,7 +1,7 @@
 import re
 from linebot.v3.webhooks import TextMessageContent, ImageMessageContent
 
-_URL_RE = re.compile(r"https?://\S+")
+_URL_RE = re.compile(r"(?:https?://)?(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?::\d+)?(?:/[^\s]*)?")
 
 def detect_type(event) -> str:
     if isinstance(event.message, ImageMessageContent):
@@ -16,4 +16,11 @@ def detect_type(event) -> str:
     return "unsupported"
 
 def extract_urls(text: str) -> list[str]:
-    return _URL_RE.findall(text)
+    urls = _URL_RE.findall(text)
+    clean_urls = []
+    for u in urls:
+        if not u.startswith("http"):
+            clean_urls.append(f"https://{u}")
+        else:
+            clean_urls.append(u)
+    return clean_urls

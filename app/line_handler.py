@@ -5,13 +5,17 @@ from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
     Configuration, ApiClient, MessagingApi, MessagingApiBlob,
-    ReplyMessageRequest, PushMessageRequest, TextMessage,
+    ReplyMessageRequest, PushMessageRequest, TextMessage, FlexMessage
 )
-from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent
+from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent, PostbackEvent
 from app.router import detect_type
 from app.pipelines import nlp as nlp_pipeline
 from app.scorer import compute_risk_score
 from app.formatter import format_response
+from app.vote_flex import build_vote_flex
+from app.vote_db import save_vote
+import hashlib
+
 _token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 _secret = os.environ.get("LINE_CHANNEL_SECRET")
 
@@ -19,6 +23,9 @@ _handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET", "dummy"))
 
 def get_config():
     return Configuration(access_token=os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
+
+def make_msg_hash(text: str) -> str:
+    return hashlib.sha256(text.strip().encode()).hexdigest()[:16]
 
 async def handle_webhook(request: Request):
     signature = request.headers.get("X-Line-Signature", "")
@@ -38,11 +45,29 @@ def _reply(reply_token: str, text: str):
         )
 
 
-def _push(user_id: str, text: str):
+def _push(user_id: str, text: str, msg_hash: str = None):
+    messages = [TextMessage(text=text)]
+    if msg_hash:
+        messages.append(FlexMessage.from_dict(build_vote_flex(msg_hash)))
+        
     with ApiClient(get_config()) as client:
         MessagingApi(client).push_message(
-            PushMessageRequest(to=user_id, messages=[TextMessage(text=text)])
+            PushMessageRequest(to=user_id, messages=messages)
         )
+
+@_handler.add(PostbackEvent)
+def handle_postback(event: PostbackEvent):
+    data = dict(p.split('=') for p in event.postback.data.split('&'))
+    if data.get('action') == 'vote':
+        asyncio.create_task(
+            save_vote(
+                msg_hash=data['msg_id'],
+                vote=data['result'],
+                user_id=event.source.user_id,
+                bigru_score=None # In a real scenario we might want to pass this through or re-compute, keeping None for now
+            )
+        )
+        # ไม่ reply — ไม่รก chat
 
 async def _build_response_async(score_result: dict, original_text: str = "") -> str:
     from app.explainer import explain
@@ -60,16 +85,18 @@ async def _build_response_async(score_result: dict, original_text: str = "") -> 
     )
 
 
-async def _process_text(text: str, state) -> str:
+async def _process_text(text: str, state) -> tuple[str, str]:
+    msg_hash = make_msg_hash(text)
     nlp_result = nlp_pipeline.run(text, state.interpreter, state.vocab)
-    score_result = compute_risk_score(nlp_result=nlp_result)
-    return await _build_response_async(score_result, text)
+    score_result = compute_risk_score(nlp_result=nlp_result, original_text=text)
+    return await _build_response_async(score_result, text), msg_hash
 
 
-async def _process_text_with_url(text: str, state) -> str:
+async def _process_text_with_url(text: str, state) -> tuple[str, str]:
     from app.router import extract_urls
     from app.pipelines.url import check_url
 
+    msg_hash = make_msg_hash(text)
     urls = extract_urls(text)
     nlp_result = nlp_pipeline.run(text, state.interpreter, state.vocab)
 
@@ -77,8 +104,8 @@ async def _process_text_with_url(text: str, state) -> str:
     if urls:
         url_result = await check_url(urls[0])  # check first URL only
 
-    score_result = compute_risk_score(nlp_result=nlp_result, url_result=url_result)
-    return await _build_response_async(score_result, text)
+    score_result = compute_risk_score(nlp_result=nlp_result, url_result=url_result, original_text=text)
+    return await _build_response_async(score_result, text), msg_hash
 
 
 @_handler.add(MessageEvent, message=TextMessageContent)
@@ -96,13 +123,13 @@ def on_text(event: MessageEvent):
 
     async def _run():
         if msg_type == "text":
-            result_text = await _process_text(event.message.text, state)
+            result_text, msg_hash = await _process_text(event.message.text, state)
         elif msg_type in ("url", "text_with_url"):
-            result_text = await _process_text_with_url(event.message.text, state)
+            result_text, msg_hash = await _process_text_with_url(event.message.text, state)
         else:
-            result_text = "ไม่รองรับรูปแบบนี้"
+            result_text, msg_hash = "ไม่รองรับรูปแบบนี้", None
         
-        _push(user_id, result_text)
+        _push(user_id, result_text, msg_hash)
 
     try:
         asyncio.create_task(_run())
@@ -131,10 +158,11 @@ def on_image(event: MessageEvent):
         # Try QR decode first
         qr_url = decode_qr(image_bytes)
         if qr_url:
+            msg_hash = make_msg_hash(qr_url)
             url_result = await check_url(qr_url)
-            score_result = compute_risk_score(url_result=url_result)
+            score_result = compute_risk_score(url_result=url_result, original_text=qr_url)
             result_text = await _build_response_async(score_result, f"QR Code: {qr_url}")
-            _push(user_id, result_text)
+            _push(user_id, result_text, msg_hash)
             return
 
         # Fall back to OCR
@@ -143,12 +171,13 @@ def on_image(event: MessageEvent):
             _push(user_id, "❌ ไม่สามารถอ่านข้อความจากรูปภาพได้")
             return
 
+        msg_hash = make_msg_hash(extracted_text)
         nlp_result = nlp_pipeline.run(extracted_text, state.interpreter, state.vocab)
         urls = extract_urls(extracted_text)
         url_result = await check_url(urls[0]) if urls else None
-        score_result = compute_risk_score(nlp_result=nlp_result, url_result=url_result)
+        score_result = compute_risk_score(nlp_result=nlp_result, url_result=url_result, original_text=extracted_text)
         result_text = await _build_response_async(score_result, extracted_text)
-        _push(user_id, result_text)
+        _push(user_id, result_text, msg_hash)
 
     try:
         asyncio.create_task(_run())

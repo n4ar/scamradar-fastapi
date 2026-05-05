@@ -25,6 +25,8 @@ def extract_domain(url: str) -> str:
     return domain.removeprefix("www.")
 
 
+_SUSPICIOUS_TLDS = [".bet", ".vip", ".top", ".cc", ".win", ".asia", ".xyz", ".club", ".me"]
+
 def check_domain_impersonation(url: str) -> tuple[str | None, bool]:
     domain = extract_domain(url)
     for keyword, (brand, legit) in _LEGIT_DOMAINS.items():
@@ -32,6 +34,9 @@ def check_domain_impersonation(url: str) -> tuple[str | None, bool]:
             return brand, True
     return None, False
 
+def check_suspicious_tld(url: str) -> bool:
+    domain = extract_domain(url)
+    return any(domain.endswith(tld) for tld in _SUSPICIOUS_TLDS)
 
 async def check_url(url: str) -> dict:
     url_hash = hashlib.md5(url.encode()).hexdigest()
@@ -53,13 +58,16 @@ async def check_url(url: str) -> dict:
         pass
 
     brand, impersonated = check_domain_impersonation(final_url)
+    is_suspicious_tld = check_suspicious_tld(final_url)
     vt_result = await _virustotal_check(final_url)
+    
     result = {
         "malicious": vt_result.get("malicious", 0),
         "total_engines": vt_result.get("total_engines", 0),
         "domain_age_days": vt_result.get("domain_age_days", 999),
         "impersonation": brand if impersonated else None,
         "is_line_oa": is_line_oa,
+        "is_suspicious_tld": is_suspicious_tld,
         "final_url": final_url if final_url != url else None
     }
     _cache[url_hash] = {**result, "_ts": time.time()}
